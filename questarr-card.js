@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.3.1";
 const CARD_TAG = "questarr-card";
 const EDITOR_TAG = "questarr-card-editor";
 
@@ -363,12 +363,19 @@ const STYLE = `
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
   }
+  /* Popups need much less see-through than the main card body — enough
+     opacity that text stays reliably legible over whatever's blurred behind
+     it, regardless of theme. The reference card does the same: its popup
+     background is ~88% opaque in dark mode, ~55% opaque *of a light gray*
+     in light mode — never anywhere near as transparent as the outer card
+     panel. Kept the blur/border/sheen for the "frosted glass" look, just
+     dialed back how much shows through. */
   .qc-modal {
     position: relative; overflow: hidden;
-    background: rgba(40, 40, 40, 0.55);
-    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 75%, transparent);
-    backdrop-filter: blur(var(--qc-blur)) saturate(160%);
-    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    background: rgba(28, 28, 30, 0.93);
+    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 93%, transparent);
+    backdrop-filter: blur(var(--qc-blur)) saturate(130%);
+    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(130%);
     color: var(--primary-text-color);
     border-radius: var(--qc-radius-lg); width: min(640px, 92vw); max-height: 88vh;
     border: 1px solid rgba(128, 128, 128, 0.3);
@@ -379,11 +386,16 @@ const STYLE = `
   .qc-modal-scroll { position: relative; z-index: 1; overflow-y: auto; max-height: 88vh; padding: 18px; }
   /* Blurred game cover behind the modal header — same "blurred poster as
      backdrop" trick the reference card uses for movie/show art. */
+  /* Confined to a fading header strip rather than the whole modal (inset:0)
+     — otherwise the cover art kept competing with body text (summary,
+     facts, download/blacklist tables) for contrast all the way down. */
   .qc-modal-banner {
-    position: absolute; inset: 0; z-index: 0;
+    position: absolute; top: 0; left: 0; right: 0; height: 220px; z-index: 0;
     background-size: cover; background-position: center;
-    filter: blur(30px) brightness(0.55) saturate(140%);
+    filter: blur(30px) brightness(0.45) saturate(140%);
     transform: scale(1.15); /* hides the blur's soft edge from the container bounds */
+    mask-image: linear-gradient(to bottom, black, transparent);
+    -webkit-mask-image: linear-gradient(to bottom, black, transparent);
   }
   .qc-modal-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .qc-modal-title { font-size: 1.25em; font-weight: 700; flex: 1; }
@@ -526,6 +538,7 @@ class QuestarrCard extends HTMLElement {
     this._discoverResults = [];
     this._discoverLoading = false;
     this._discoverSearchQuery = "";
+    this._discoverSearchDraft = "";
     this._discoverGenres = [];
     this._discoverPlatforms = [];
     this._discoverGenreSel = "";
@@ -541,6 +554,7 @@ class QuestarrCard extends HTMLElement {
 
     // Indexer search
     this._searchQuery = "";
+    this._searchDraft = "";
     this._searchResults = [];
     this._searchTotal = 0;
     this._searchLoading = false;
@@ -557,6 +571,7 @@ class QuestarrCard extends HTMLElement {
     this._xrelPage = 1;
     this._xrelMode = "latest";
     this._xrelSearchQuery = "";
+    this._xrelSearchDraft = "";
     this._xrelSearchResults = null;
     this._xrelSceneOnly = true;
     this._xrelP2p = false;
@@ -740,7 +755,20 @@ class QuestarrCard extends HTMLElement {
       this._setError(err, "Could not load games");
       return;
     }
-    this._render();
+    this._patchStatsHeader();
+  }
+
+  // Surgical DOM patch instead of a full _render(). This runs on every
+  // normal-tier poll tick (30s, via _fetchStats) AND every fast-tier tick
+  // (5s, via _fetchUnreadCount) — regardless of which panel is active or
+  // what the user might be mid-typing into a search box there. Rebuilding
+  // the whole shell that often was destroying and recreating focused
+  // <input> elements out from under the user, making it effectively
+  // impossible to type in any search field — this patches only the
+  // header (stats + bell), leaving the rest of the shell untouched.
+  _patchStatsHeader() {
+    const headerEl = this._shellEl?.querySelector(".qc-header");
+    if (headerEl) headerEl.outerHTML = this._renderHeader();
   }
 
   // ── Polling ──────────────────────────────────────────────────────────
@@ -1801,10 +1829,15 @@ class QuestarrCard extends HTMLElement {
     }
   }
 
+  _onInput_discoverSearchDraft(el) {
+    this._discoverSearchDraft = el.value;
+  }
+
   _onSubmit_discoverSearch(el) {
     const input = el.querySelector('input[name="q"]');
     const q = input?.value?.trim();
     this._discoverSearchQuery = q || "";
+    this._discoverSearchDraft = q || "";
     if (q) this._fetchDiscoverSearch(q);
   }
 
@@ -1855,7 +1888,8 @@ class QuestarrCard extends HTMLElement {
     } else if (this._discoverTab === "search") {
       controls = `
         <form class="qc-toolbar" data-submit="discoverSearch">
-          <input type="search" name="q" placeholder="Search for a game…" data-focus-id="discover-search" value="${esc(this._discoverSearchQuery)}" />
+          <input type="search" name="q" placeholder="Search for a game…" data-input="discoverSearchDraft"
+                 data-focus-id="discover-search" value="${esc(this._discoverSearchDraft)}" />
           <button type="submit" class="qc-btn">Search</button>
         </form>
       `;
@@ -1915,10 +1949,15 @@ class QuestarrCard extends HTMLElement {
   // ── Indexer search: actions ──────────────────────────────────────────
   // "Grab" is shared with the xREL panel (task 11 reuses this same handler).
 
+  _onInput_indexerSearchDraft(el) {
+    this._searchDraft = el.value;
+  }
+
   _onSubmit_indexerSearch(el) {
     const input = el.querySelector('input[name="query"]');
     const query = input?.value?.trim();
     this._searchQuery = query || "";
+    this._searchDraft = query || "";
     if (query) this._fetchIndexerSearch(query);
   }
 
@@ -1958,7 +1997,8 @@ class QuestarrCard extends HTMLElement {
 
     return `
       <form class="qc-toolbar" data-submit="indexerSearch">
-        <input type="search" name="query" placeholder="Search indexers…" data-focus-id="indexer-search" value="${esc(this._searchQuery)}" />
+        <input type="search" name="query" placeholder="Search indexers…" data-input="indexerSearchDraft"
+               data-focus-id="indexer-search" value="${esc(this._searchDraft)}" />
         <button type="submit" class="qc-btn" ${this._searchLoading ? "disabled" : ""}>
           ${this._searchLoading ? "Searching…" : "Search"}
         </button>
@@ -2165,10 +2205,15 @@ class QuestarrCard extends HTMLElement {
 
   // ── xREL: actions ─────────────────────────────────────────────────────
 
+  _onInput_xrelSearchDraft(el) {
+    this._xrelSearchDraft = el.value;
+  }
+
   _onSubmit_xrelSearch(el) {
     const input = el.querySelector('input[name="q"]');
     const q = input?.value?.trim();
     this._xrelSearchQuery = q || "";
+    this._xrelSearchDraft = q || "";
     if (q) this._fetchXrelSearch(q);
   }
 
@@ -2217,6 +2262,7 @@ class QuestarrCard extends HTMLElement {
     const query = el.dataset.query;
     this._activeTab = "search";
     this._searchQuery = query;
+    this._searchDraft = query;
     this._render();
     this._fetchIndexerSearch(query);
   }
@@ -2226,7 +2272,8 @@ class QuestarrCard extends HTMLElement {
   _renderXrelPanel() {
     const searchForm = `
       <form class="qc-toolbar" data-submit="xrelSearch">
-        <input type="search" name="q" placeholder="Search xREL…" data-focus-id="xrel-search" value="${esc(this._xrelSearchQuery)}" />
+        <input type="search" name="q" placeholder="Search xREL…" data-input="xrelSearchDraft"
+               data-focus-id="xrel-search" value="${esc(this._xrelSearchDraft)}" />
         <label><input type="checkbox" data-change="xrelSceneToggle" ${this._xrelSceneOnly ? "checked" : ""} /> Scene</label>
         <label><input type="checkbox" data-change="xrelP2pToggle" ${this._xrelP2p ? "checked" : ""} /> P2P</label>
         <button type="submit" class="qc-btn">Search</button>
@@ -2321,7 +2368,7 @@ class QuestarrCard extends HTMLElement {
       // banner popping up every fast-poll tick if Questarr is briefly down.
       return;
     }
-    this._render();
+    this._patchStatsHeader();
   }
 
   async _fetchNotifications() {
