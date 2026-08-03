@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 const CARD_TAG = "questarr-card";
 const EDITOR_TAG = "questarr-card-editor";
 
@@ -140,14 +140,57 @@ function errMessage(err) {
 
 const STYLE = `
 <style>
-  :host { display: block; }
-  ha-card { overflow: hidden; }
-  .qc-root { display: flex; flex-direction: column; }
+  * { box-sizing: border-box; }
+
+  /* ── Design tokens ──────────────────────────────────────────────────
+     Glassmorphism (frosted, translucent panels over a blurred backdrop),
+     in the visual spirit of ha-arr-stack-card — but built from HA's own
+     theme variables via color-mix() rather than hardcoded colors, so it
+     adapts to whatever theme (light or dark) the dashboard is using
+     instead of assuming a dark wallpaper is always behind it. Each
+     color-mix() declaration has a plain rgba() fallback line before it
+     for engines that don't support color-mix — the later, supported
+     declaration simply wins the cascade where available. */
+  :host {
+    display: block;
+    --qc-radius-lg: 26px;
+    --qc-radius-md: 16px;
+    --qc-radius-sm: 10px;
+    --qc-blur: 26px;
+    --qc-accent-rgb: 10, 132, 255;
+    font-family: var(--paper-font-body1_-_font-family, -apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif);
+  }
+
+  ha-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--qc-radius-lg);
+    background: rgba(128, 128, 128, 0.14);
+    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 55%, transparent);
+    backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border: 1px solid color-mix(in srgb, var(--divider-color, #8e8e93) 55%, transparent);
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.16), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  }
+  /* Diagonal glass "sheen" highlight, same trick the reference card uses on
+     its panels — a subtle light source from the top-left corner. */
+  ha-card::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(120deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0.05) 35%, transparent 60%);
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  .qc-root { position: relative; z-index: 1; display: flex; flex-direction: column; }
 
   .qc-error {
     display: flex; align-items: center; gap: 8px;
-    padding: 8px 16px; background: var(--error-color, #db4437); color: white;
-    font-size: 0.9em;
+    margin: 14px 16px 0; padding: 10px 16px; border-radius: var(--qc-radius-sm);
+    background: color-mix(in srgb, var(--error-color, #db4437) 80%, transparent);
+    backdrop-filter: blur(10px);
+    color: white; font-size: 0.9em;
   }
   .qc-error button {
     margin-left: auto; background: none; border: none; color: inherit;
@@ -155,108 +198,152 @@ const STYLE = `
   }
   .qc-error button:hover { opacity: 1; }
 
-  .qc-header { padding: 16px 16px 8px 16px; }
+  .qc-header { padding: 18px 20px 10px; }
   .qc-header-top { display: flex; align-items: center; gap: 8px; }
   .qc-title {
-    font-size: 1.3em; font-weight: 500; color: var(--primary-text-color);
+    font-size: 1.35em; font-weight: 700; letter-spacing: -0.01em;
+    color: var(--primary-text-color);
     flex: 1;
   }
   .qc-bell {
-    position: relative; background: none; border: none; cursor: pointer;
-    color: var(--primary-text-color); padding: 4px; display: flex;
+    position: relative; border: none; cursor: pointer;
+    color: var(--primary-text-color); width: 36px; height: 36px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    background: rgba(128, 128, 128, 0.12);
+    background: color-mix(in srgb, var(--primary-text-color) 8%, transparent);
+    transition: background 0.15s ease;
+  }
+  .qc-bell:hover {
+    background: rgba(128, 128, 128, 0.22);
+    background: color-mix(in srgb, var(--primary-text-color) 16%, transparent);
   }
   .qc-bell-badge {
-    position: absolute; top: 0; right: 0; background: var(--error-color, #db4437);
-    color: white; border-radius: 999px; font-size: 0.65em; line-height: 1;
-    padding: 2px 4px; min-width: 14px; text-align: center;
+    position: absolute; top: -2px; right: -2px; background: var(--error-color, #db4437);
+    color: white; border-radius: 999px; font-size: 0.65em; line-height: 1; font-weight: 700;
+    padding: 3px 5px; min-width: 14px; text-align: center;
+    box-shadow: 0 0 0 2px var(--card-background-color, transparent);
   }
 
-  .qc-stats { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
-  .qc-stat { display: flex; flex-direction: column; align-items: flex-start; }
-  .qc-stat-value { font-size: 1.4em; font-weight: 600; color: var(--primary-text-color); }
+  .qc-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .qc-stat {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    padding: 8px 14px; border-radius: var(--qc-radius-sm);
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
+    border: 1px solid rgba(128, 128, 128, 0.14);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 40%, transparent);
+  }
+  .qc-stat-value { font-size: 1.3em; font-weight: 700; color: var(--primary-text-color); line-height: 1.1; }
   .qc-stat-label {
-    font-size: 0.75em; color: var(--secondary-text-color);
-    text-transform: uppercase; letter-spacing: 0.03em;
+    font-size: 0.68em; color: var(--secondary-text-color); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
   }
 
+  /* Segmented-pill nav, iOS/macOS-style, instead of an underlined tab bar */
   .qc-nav {
-    display: flex; gap: 4px; padding: 0 16px; overflow-x: auto;
-    border-bottom: 1px solid var(--divider-color);
+    display: flex; gap: 2px; margin: 14px 20px 0; padding: 4px;
+    overflow-x: auto; border-radius: 999px;
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
   }
   .qc-nav-btn {
-    background: none; border: none; cursor: pointer; padding: 10px 12px;
-    font-size: 0.9em; color: var(--secondary-text-color);
-    border-bottom: 2px solid transparent; white-space: nowrap;
+    background: none; border: none; cursor: pointer; padding: 8px 14px;
+    font-size: 0.85em; font-weight: 600; color: var(--secondary-text-color);
+    white-space: nowrap; border-radius: 999px; transition: background 0.15s ease, color 0.15s ease;
   }
   .qc-nav-btn.active {
-    color: var(--primary-color); border-bottom-color: var(--primary-color);
-    font-weight: 500;
+    color: white;
+    background: rgb(var(--qc-accent-rgb));
+    background: color-mix(in srgb, var(--primary-color, rgb(var(--qc-accent-rgb))) 92%, transparent);
+    box-shadow: 0 2px 8px rgba(var(--qc-accent-rgb), 0.4);
   }
 
-  .qc-panel { padding: 16px; }
+  .qc-panel { padding: 18px 20px 20px; }
   .qc-empty {
-    padding: 24px 0; text-align: center; color: var(--secondary-text-color);
+    padding: 28px 0; text-align: center; color: var(--secondary-text-color);
     font-size: 0.9em;
   }
-  .qc-loading { padding: 24px 0; text-align: center; color: var(--secondary-text-color); }
+  .qc-loading { padding: 28px 0; text-align: center; color: var(--secondary-text-color); }
 
-  .qc-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  .qc-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
   .qc-toolbar input[type="text"], .qc-toolbar input[type="search"], .qc-toolbar select {
-    background: var(--card-background-color);
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
     color: var(--primary-text-color);
-    border: 1px solid var(--divider-color);
-    border-radius: 6px; padding: 6px 10px; font-size: 0.9em;
+    border: 1px solid rgba(128, 128, 128, 0.16);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 45%, transparent);
+    border-radius: 999px; padding: 7px 14px; font-size: 0.9em;
   }
   .qc-toolbar label { display: flex; align-items: center; gap: 4px; font-size: 0.85em; color: var(--secondary-text-color); }
   .qc-spacer { flex: 1; }
 
   .qc-btn {
-    background: var(--primary-color); color: var(--text-primary-color, #fff);
-    border: none; border-radius: 6px; padding: 6px 12px; font-size: 0.85em;
-    cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    background: rgb(var(--qc-accent-rgb));
+    background: color-mix(in srgb, var(--primary-color, rgb(var(--qc-accent-rgb))) 90%, transparent);
+    color: white;
+    border: none; border-radius: 999px; padding: 8px 16px; font-size: 0.85em; font-weight: 600;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+    transition: transform 0.1s ease, box-shadow 0.15s ease;
+    box-shadow: 0 2px 8px rgba(var(--qc-accent-rgb), 0.35);
   }
-  .qc-btn:disabled { opacity: 0.5; cursor: default; }
+  .qc-btn:active { transform: scale(0.96); }
+  .qc-btn:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: none; }
   .qc-btn.secondary {
-    background: none; color: var(--primary-color); border: 1px solid var(--primary-color);
+    background: rgba(128, 128, 128, 0.12);
+    background: color-mix(in srgb, var(--primary-text-color) 8%, transparent);
+    backdrop-filter: blur(8px);
+    color: var(--primary-text-color);
+    border: 1px solid rgba(128, 128, 128, 0.18);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 50%, transparent);
+    box-shadow: none;
   }
-  .qc-btn.danger { background: var(--error-color, #db4437); }
-  .qc-btn.icon { padding: 6px; }
+  .qc-btn.danger {
+    background: var(--error-color, #db4437);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--error-color, #db4437) 40%, transparent);
+  }
+  .qc-btn.icon { padding: 8px; }
 
   .qc-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 999px;
-    font-size: 0.72em; font-weight: 500; text-transform: capitalize;
-    background: var(--divider-color); color: var(--primary-text-color);
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 0.7em; font-weight: 700; text-transform: capitalize; letter-spacing: 0.01em;
+    background: rgba(128, 128, 128, 0.18);
+    background: color-mix(in srgb, var(--primary-text-color) 12%, transparent);
+    color: var(--primary-text-color);
   }
-  .qc-badge.wanted { background: #fdd835; color: #3a3000; }
-  .qc-badge.owned { background: #43a047; color: white; }
-  .qc-badge.downloading { background: #1e88e5; color: white; }
-  .qc-badge.completed { background: #8e24aa; color: white; }
+  .qc-badge.wanted { background: rgba(253, 216, 53, 0.28); color: #b28900; }
+  .qc-badge.owned { background: rgba(67, 160, 71, 0.28); color: #2e8b32; }
+  .qc-badge.shelved { background: rgba(142, 142, 147, 0.28); color: #6e6e73; }
+  .qc-badge.downloading { background: rgba(30, 136, 229, 0.28); color: #1467b3; }
+  .qc-badge.completed { background: rgba(142, 36, 170, 0.28); color: #9c27b0; }
 
-  .qc-pagination { display: flex; gap: 8px; justify-content: center; margin-top: 12px; align-items: center; }
-
-  ha-dialog {
-    --mdc-dialog-min-width: min(640px, 92vw);
-    --mdc-dialog-max-width: min(720px, 92vw);
-  }
+  .qc-pagination { display: flex; gap: 8px; justify-content: center; margin-top: 14px; align-items: center; }
 
   .qc-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 12px;
+    gap: 14px;
   }
   .qc-game-card {
-    cursor: pointer; border-radius: 8px; overflow: hidden;
-    background: var(--secondary-background-color, rgba(127, 127, 127, 0.08));
-    display: flex; flex-direction: column; border: none; text-align: left; padding: 0;
+    position: relative; cursor: pointer; border-radius: var(--qc-radius-md); overflow: hidden;
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
+    border: 1px solid rgba(128, 128, 128, 0.14);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 35%, transparent);
+    display: flex; flex-direction: column; text-align: left; padding: 0;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .qc-card-art { aspect-ratio: 3 / 4; overflow: hidden; background: var(--divider-color); }
+  .qc-game-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  }
+  .qc-card-art { position: relative; aspect-ratio: 3 / 4; overflow: hidden; background: var(--divider-color); }
   .qc-card-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .qc-card-noart {
     width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
     color: var(--secondary-text-color); font-size: 1.6em;
   }
-  .qc-card-body { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .qc-card-body { padding: 9px 10px; display: flex; flex-direction: column; gap: 5px; }
   .qc-card-title {
-    font-size: 0.85em; font-weight: 500; color: var(--primary-text-color);
+    font-size: 0.85em; font-weight: 600; color: var(--primary-text-color);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
@@ -265,22 +352,38 @@ const STYLE = `
      drag wrapper) establishes its own containing block — a known, cosmetic-
      only edge case for fixed-position modals in Lovelace custom cards. */
   .qc-modal-backdrop {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(6px);
     display: flex; align-items: center; justify-content: center;
     z-index: 20; padding: 16px;
   }
   .qc-modal {
-    background: var(--card-background-color); color: var(--primary-text-color);
-    border-radius: 12px; max-width: 640px; width: 100%; max-height: 88vh;
-    overflow-y: auto; padding: 16px;
-    box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0, 0, 0, 0.3));
+    position: relative; overflow: hidden;
+    background: rgba(40, 40, 40, 0.55);
+    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 75%, transparent);
+    backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    color: var(--primary-text-color);
+    border-radius: var(--qc-radius-lg); max-width: 640px; width: 100%; max-height: 88vh;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 55%, transparent);
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35);
   }
-  .qc-modal-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .qc-modal-title { font-size: 1.2em; font-weight: 500; flex: 1; }
-  .qc-modal-nav { margin: 0 0 12px 0; }
+  .qc-modal-scroll { position: relative; z-index: 1; overflow-y: auto; max-height: 88vh; padding: 18px; }
+  /* Blurred game cover behind the modal header — same "blurred poster as
+     backdrop" trick the reference card uses for movie/show art. */
+  .qc-modal-banner {
+    position: absolute; inset: 0; z-index: 0;
+    background-size: cover; background-position: center;
+    filter: blur(30px) brightness(0.55) saturate(140%);
+    transform: scale(1.15); /* hides the blur's soft edge from the container bounds */
+  }
+  .qc-modal-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .qc-modal-title { font-size: 1.25em; font-weight: 700; flex: 1; }
+  .qc-modal-nav { margin: 0 0 14px 0; }
   .qc-modal-body { display: flex; flex-direction: column; gap: 12px; }
   .qc-modal-info { display: flex; gap: 16px; flex-wrap: wrap; }
-  .qc-modal-cover { width: 140px; border-radius: 8px; object-fit: cover; }
+  .qc-modal-cover { width: 140px; border-radius: var(--qc-radius-sm); object-fit: cover; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35); }
   .qc-modal-meta { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 10px; }
   .qc-modal-summary { font-size: 0.9em; color: var(--secondary-text-color); margin: 0; }
   .qc-modal-facts { font-size: 0.85em; display: flex; flex-direction: column; gap: 2px; }
@@ -289,58 +392,103 @@ const STYLE = `
   }
 
   .qc-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-  .qc-table th, .qc-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--divider-color); }
-
-  .qc-storage-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-  .qc-storage-chip {
-    display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px;
-    background: var(--secondary-background-color, rgba(127, 127, 127, 0.08)); font-size: 0.8em;
+  .qc-table th, .qc-table td {
+    text-align: left; padding: 8px 10px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+    border-bottom: 1px solid color-mix(in srgb, var(--divider-color) 40%, transparent);
   }
-  .qc-dl-name { font-size: 0.85em; margin-bottom: 4px; }
-  .qc-progress { height: 4px; border-radius: 2px; background: var(--divider-color); overflow: hidden; width: 160px; }
-  .qc-progress-bar { height: 100%; background: var(--primary-color); }
-  .qc-scan-results { margin-bottom: 12px; border: 1px dashed var(--divider-color); border-radius: 8px; padding: 8px; }
-  .qc-scan-title { font-weight: 500; margin-bottom: 6px; font-size: 0.9em; }
-  .qc-scan-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 0.85em; }
+  .qc-table tbody tr { transition: background 0.1s ease; }
+  .qc-table tbody tr:hover {
+    background: rgba(128, 128, 128, 0.08);
+    background: color-mix(in srgb, var(--primary-text-color) 5%, transparent);
+  }
 
-  .qc-subnav { border-bottom: none; padding: 0; margin-bottom: 8px; }
+  .qc-storage-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .qc-storage-chip {
+    display: flex; align-items: center; gap: 5px; padding: 5px 12px; border-radius: 999px;
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
+    border: 1px solid rgba(128, 128, 128, 0.14);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 35%, transparent);
+    font-size: 0.8em;
+  }
+  .qc-dl-name { font-size: 0.85em; margin-bottom: 4px; font-weight: 500; }
+  .qc-progress {
+    height: 5px; border-radius: 999px; overflow: hidden; width: 160px;
+    background: rgba(128, 128, 128, 0.16);
+    background: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+  }
+  .qc-progress-bar {
+    height: 100%; border-radius: 999px;
+    background: rgb(var(--qc-accent-rgb));
+    background: color-mix(in srgb, var(--primary-color, rgb(var(--qc-accent-rgb))) 92%, transparent);
+    box-shadow: 0 0 8px rgba(var(--qc-accent-rgb), 0.6);
+  }
+  .qc-scan-results {
+    margin-bottom: 14px; border-radius: var(--qc-radius-sm); padding: 10px;
+    border: 1px dashed rgba(128, 128, 128, 0.3);
+    border: 1px dashed color-mix(in srgb, var(--divider-color) 55%, transparent);
+  }
+  .qc-scan-title { font-weight: 700; margin-bottom: 6px; font-size: 0.9em; }
+  .qc-scan-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 0.85em; }
+
+  .qc-subnav { padding: 3px; margin: 0 0 12px; }
 
   .qc-rss-card { cursor: default; }
   .qc-rss-meta { font-size: 0.72em; color: var(--secondary-text-color); }
 
-  .qc-xrel-list { display: flex; flex-direction: column; gap: 6px; }
+  .qc-xrel-list { display: flex; flex-direction: column; gap: 8px; }
   .qc-xrel-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 8px; border-radius: 8px;
-    background: var(--secondary-background-color, rgba(127, 127, 127, 0.06));
+    padding: 10px 14px; border-radius: var(--qc-radius-sm);
+    background: rgba(128, 128, 128, 0.08);
+    background: color-mix(in srgb, var(--primary-text-color) 5%, transparent);
+    border: 1px solid rgba(128, 128, 128, 0.12);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 30%, transparent);
   }
   .qc-xrel-main { min-width: 0; }
-  .qc-xrel-title { font-weight: 500; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qc-xrel-title { font-weight: 600; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qc-xrel-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
   .qc-notif-backdrop { position: fixed; inset: 0; z-index: 25; background: transparent; }
   .qc-notif-panel {
     position: absolute; top: 60px; right: 16px; width: min(360px, 92vw);
-    max-height: 70vh; overflow-y: auto; padding: 12px;
-    background: var(--card-background-color); color: var(--primary-text-color);
-    border-radius: 12px; border: 1px solid var(--divider-color);
-    box-shadow: var(--ha-card-box-shadow, 0 2px 12px rgba(0, 0, 0, 0.35));
+    max-height: 70vh; overflow-y: auto; padding: 14px;
+    background: rgba(40, 40, 40, 0.55);
+    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 78%, transparent);
+    backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
+    color: var(--primary-text-color);
+    border-radius: var(--qc-radius-lg);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border: 1px solid color-mix(in srgb, var(--divider-color) 55%, transparent);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
   }
   .qc-notif-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-  .qc-notif-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 8px; }
-  .qc-notif-row.unread { background: var(--secondary-background-color, rgba(127, 127, 127, 0.08)); }
+  .qc-notif-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px; border-radius: var(--qc-radius-sm); }
+  .qc-notif-row.unread {
+    background: rgba(128, 128, 128, 0.10);
+    background: color-mix(in srgb, var(--primary-text-color) 7%, transparent);
+  }
   .qc-notif-body { flex: 1; min-width: 0; }
-  .qc-notif-title { font-weight: 500; font-size: 0.85em; }
+  .qc-notif-title { font-weight: 700; font-size: 0.85em; }
   .qc-notif-message { font-size: 0.8em; color: var(--secondary-text-color); }
 
-  .qc-calendar-list { display: flex; flex-direction: column; gap: 4px; }
+  .qc-calendar-list { display: flex; flex-direction: column; gap: 6px; }
   .qc-calendar-row {
-    display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 8px; border: none;
-    background: var(--secondary-background-color, rgba(127, 127, 127, 0.06)); cursor: pointer;
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    border-radius: var(--qc-radius-sm); border: none; cursor: pointer;
+    background: rgba(128, 128, 128, 0.08);
+    background: color-mix(in srgb, var(--primary-text-color) 5%, transparent);
     text-align: left; color: var(--primary-text-color); font: inherit; width: 100%;
+    transition: background 0.1s ease;
+  }
+  .qc-calendar-row:hover {
+    background: rgba(128, 128, 128, 0.14);
+    background: color-mix(in srgb, var(--primary-text-color) 9%, transparent);
   }
   .qc-calendar-date { font-size: 0.8em; color: var(--secondary-text-color); min-width: 90px; }
-  .qc-calendar-title { flex: 1; font-weight: 500; font-size: 0.9em; }
+  .qc-calendar-title { flex: 1; font-weight: 600; font-size: 0.9em; }
 
   /* === PANEL STYLES INSERTION POINT — do not remove this comment === */
 </style>
@@ -1039,7 +1187,9 @@ class QuestarrCard extends HTMLElement {
     if (!game) {
       return `
         <div class="qc-modal-backdrop" data-action="closeGameDetail">
-          <div class="qc-modal" data-action="noop"><div class="qc-loading">Loading…</div></div>
+          <div class="qc-modal" data-action="noop">
+            <div class="qc-modal-scroll"><div class="qc-loading">Loading…</div></div>
+          </div>
         </div>
       `;
     }
@@ -1070,15 +1220,22 @@ class QuestarrCard extends HTMLElement {
       body = this._renderGameInfoTab(game);
     }
 
+    const bannerHtml = game.coverUrl
+      ? `<div class="qc-modal-banner" style="background-image:url('${esc(game.coverUrl)}')"></div>`
+      : "";
+
     return `
       <div class="qc-modal-backdrop" data-action="closeGameDetail">
         <div class="qc-modal" data-action="noop">
-          <div class="qc-modal-header">
-            <div class="qc-modal-title">${esc(game.title)}</div>
-            <button class="qc-btn icon secondary" data-action="closeGameDetail"><ha-icon icon="mdi:close"></ha-icon></button>
+          ${bannerHtml}
+          <div class="qc-modal-scroll">
+            <div class="qc-modal-header">
+              <div class="qc-modal-title">${esc(game.title)}</div>
+              <button class="qc-btn icon secondary" data-action="closeGameDetail"><ha-icon icon="mdi:close"></ha-icon></button>
+            </div>
+            <div class="qc-nav qc-modal-nav">${tabBtns}</div>
+            <div class="qc-modal-body">${body}</div>
           </div>
-          <div class="qc-nav qc-modal-nav">${tabBtns}</div>
-          <div class="qc-modal-body">${body}</div>
         </div>
       </div>
     `;
