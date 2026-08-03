@@ -16,7 +16,7 @@
 // Constants
 // ─────────────────────────────────────────────────────────────────────────
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 const CARD_TAG = "questarr-card";
 const EDITOR_TAG = "questarr-card-editor";
 
@@ -347,15 +347,21 @@ const STYLE = `
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  /* position:fixed resolves against the viewport even from inside a shadow
-     root, unless some ancestor in the light DOM (e.g. a dashboard's edit-mode
-     drag wrapper) establishes its own containing block — a known, cosmetic-
-     only edge case for fixed-position modals in Lovelace custom cards. */
-  .qc-modal-backdrop {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+  /* Native <dialog>, shown via showModal(), is promoted to the browser's
+     top layer — sized/positioned against the actual viewport regardless of
+     any ancestor's transform/contain/scroll state. A hand-rolled
+     position:fixed overlay looks identical on paper but silently breaks
+     the moment an ancestor establishes its own containing block, which
+     HA's sections/masonry views and view-transition animations do in
+     practice — hence <dialog> instead of a div here. */
+  .qc-dialog {
+    padding: 0; border: none; background: transparent; color: inherit;
+    max-width: none; max-height: none;
+  }
+  .qc-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(6px);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 20; padding: 16px;
+    -webkit-backdrop-filter: blur(6px);
   }
   .qc-modal {
     position: relative; overflow: hidden;
@@ -364,11 +370,12 @@ const STYLE = `
     backdrop-filter: blur(var(--qc-blur)) saturate(160%);
     -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
     color: var(--primary-text-color);
-    border-radius: var(--qc-radius-lg); max-width: 640px; width: 100%; max-height: 88vh;
+    border-radius: var(--qc-radius-lg); width: min(640px, 92vw); max-height: 88vh;
     border: 1px solid rgba(128, 128, 128, 0.3);
     border: 1px solid color-mix(in srgb, var(--divider-color) 55%, transparent);
     box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35);
   }
+  .qc-modal-narrow { width: min(360px, 92vw); }
   .qc-modal-scroll { position: relative; z-index: 1; overflow-y: auto; max-height: 88vh; padding: 18px; }
   /* Blurred game cover behind the modal header — same "blurred poster as
      backdrop" trick the reference card uses for movie/show art. */
@@ -450,20 +457,6 @@ const STYLE = `
   .qc-xrel-title { font-weight: 600; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qc-xrel-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
-  .qc-notif-backdrop { position: fixed; inset: 0; z-index: 25; background: transparent; }
-  .qc-notif-panel {
-    position: absolute; top: 60px; right: 16px; width: min(360px, 92vw);
-    max-height: 70vh; overflow-y: auto; padding: 14px;
-    background: rgba(40, 40, 40, 0.55);
-    background: color-mix(in srgb, var(--card-background-color, #1c1c1e) 78%, transparent);
-    backdrop-filter: blur(var(--qc-blur)) saturate(160%);
-    -webkit-backdrop-filter: blur(var(--qc-blur)) saturate(160%);
-    color: var(--primary-text-color);
-    border-radius: var(--qc-radius-lg);
-    border: 1px solid rgba(128, 128, 128, 0.3);
-    border: 1px solid color-mix(in srgb, var(--divider-color) 55%, transparent);
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
-  }
   .qc-notif-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
   .qc-notif-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px; border-radius: var(--qc-radius-sm); }
   .qc-notif-row.unread {
@@ -506,6 +499,10 @@ class QuestarrCard extends HTMLElement {
     this._config = { ...DEFAULT_CONFIG };
     this._hass = null;
     this._connected = false;
+    this._skeletonReady = false;
+    this._shellEl = null;
+    this._gameDialogEl = null;
+    this._notifDialogEl = null;
     this._activeTab = DEFAULT_CONFIG.default_tab;
     this._pollTimer = null;
     this._fastPollTimer = null;
@@ -604,6 +601,7 @@ class QuestarrCard extends HTMLElement {
 
   connectedCallback() {
     this._connected = true;
+    this._ensureSkeleton();
     this.shadowRoot.addEventListener("click", this._handleClick);
     this.shadowRoot.addEventListener("input", this._handleInput);
     this.shadowRoot.addEventListener("change", this._handleChange);
@@ -803,15 +801,77 @@ class QuestarrCard extends HTMLElement {
   // step" goal. Focus/selection on the currently-focused input (e.g. a
   // search box) is preserved across re-renders via a data-focus-id round
   // trip, since a full innerHTML replace would otherwise steal focus.
+  //
+  // The game-detail modal and notifications popover are the one exception:
+  // they live in persistent <dialog> elements built once by _ensureSkeleton()
+  // rather than being torn down and rebuilt by every _render() call, and are
+  // shown via showModal() rather than a hand-rolled position:fixed overlay.
+  // A position:fixed div is normally sized/positioned against the viewport,
+  // but that assumption breaks the moment any ancestor in the dashboard
+  // establishes its own containing block (a CSS transform, `contain`, or
+  // similar — which HA's sections/masonry views, view-transition animations,
+  // and the iOS companion app's WebView all do in practice) — the popup then
+  // gets sized/positioned against that ancestor's box instead of the actual
+  // screen, which is exactly the "cut off" / "opens in the wrong place"
+  // symptom this card hit. A native <dialog> shown via showModal() is
+  // promoted to the browser's top layer, which is immune to all of that by
+  // construction, regardless of any ancestor's CSS.
+
+  _ensureSkeleton() {
+    if (this._skeletonReady) return;
+    this._skeletonReady = true;
+
+    this.shadowRoot.innerHTML = `
+      ${STYLE}
+      <ha-card><div class="qc-root" id="qc-shell"></div></ha-card>
+      <dialog class="qc-dialog"></dialog>
+      <dialog class="qc-dialog"></dialog>
+    `;
+    this._shellEl = this.shadowRoot.getElementById("qc-shell");
+    const dialogs = this.shadowRoot.querySelectorAll("dialog");
+    this._gameDialogEl = dialogs[0];
+    this._notifDialogEl = dialogs[1];
+
+    this._wireDialogDismiss(this._gameDialogEl, () => {
+      this._selectedGameId = null;
+    });
+    this._wireDialogDismiss(this._notifDialogEl, () => {
+      this._notifDropdownOpen = false;
+    });
+  }
+
+  // Standard native-<dialog> "light dismiss" pattern: a click that lands on
+  // the dialog element itself (rather than bubbling from a descendant) means
+  // it hit the backdrop margin, not the visible content box — MDN's own
+  // <dialog> docs recommend exactly this rect check. The `close` event
+  // covers every dismissal path uniformly (this click handler, the Escape
+  // key, which the browser handles natively, or an explicit .close() call),
+  // so app state only needs to be reconciled in one place.
+  _wireDialogDismiss(dialog, onDismiss) {
+    dialog.addEventListener("click", (ev) => {
+      if (ev.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      const inside =
+        ev.clientX >= rect.left && ev.clientX <= rect.right && ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+      if (!inside) dialog.close();
+    });
+    dialog.addEventListener("close", () => {
+      onDismiss();
+      this._render();
+    });
+  }
 
   _render() {
+    this._ensureSkeleton();
     const root = this.shadowRoot;
     const active = root.activeElement;
     const focusId = active?.dataset?.focusId;
     const selStart = active?.selectionStart;
     const selEnd = active?.selectionEnd;
 
-    root.innerHTML = STYLE + this._renderShell();
+    this._shellEl.innerHTML = this._renderShell();
+    this._syncGameDialog();
+    this._syncNotifDialog();
 
     if (focusId) {
       const el = root.querySelector(`[data-focus-id="${focusId}"]`);
@@ -828,30 +888,36 @@ class QuestarrCard extends HTMLElement {
     }
   }
 
+  _syncGameDialog() {
+    const dialog = this._gameDialogEl;
+    if (this._selectedGameId && typeof this._renderGameDetailModal === "function") {
+      dialog.innerHTML = this._renderGameDetailModal();
+      if (!dialog.open) dialog.showModal();
+    } else if (dialog.open) {
+      dialog.close();
+    }
+  }
+
+  _syncNotifDialog() {
+    const dialog = this._notifDialogEl;
+    if (this._notifDropdownOpen && typeof this._renderNotificationsDropdown === "function") {
+      dialog.innerHTML = this._renderNotificationsDropdown();
+      if (!dialog.open) dialog.showModal();
+    } else if (dialog.open) {
+      dialog.close();
+    }
+  }
+
   _renderShell() {
     const errorHtml = this._error
       ? `<div class="qc-error"><ha-icon icon="mdi:alert-circle"></ha-icon><span>${esc(this._error)}</span><button data-action="dismissError">✕</button></div>`
       : "";
-    const notifHtml =
-      this._notifDropdownOpen && typeof this._renderNotificationsDropdown === "function"
-        ? this._renderNotificationsDropdown()
-        : "";
-    const modalHtml =
-      this._selectedGameId && typeof this._renderGameDetailModal === "function"
-        ? this._renderGameDetailModal()
-        : "";
 
     return `
-      <ha-card>
-        <div class="qc-root">
-          ${errorHtml}
-          ${this._renderHeader()}
-          ${this._renderNav()}
-          <div class="qc-panel">${this._renderActivePanel()}</div>
-        </div>
-        ${notifHtml}
-        ${modalHtml}
-      </ha-card>
+      ${errorHtml}
+      ${this._renderHeader()}
+      ${this._renderNav()}
+      <div class="qc-panel">${this._renderActivePanel()}</div>
     `;
   }
 
@@ -986,11 +1052,6 @@ class QuestarrCard extends HTMLElement {
   }
 
   // ── Library: actions ─────────────────────────────────────────────────
-
-  _onAction_noop() {
-    // Intentionally empty — see the modal box's data-action="noop" comment
-    // near _renderGameDetailModal for why this exists.
-  }
 
   _onAction_openGame(el) {
     const id = el.dataset.id;
@@ -1186,10 +1247,8 @@ class QuestarrCard extends HTMLElement {
     const game = this._getGame(this._selectedGameId);
     if (!game) {
       return `
-        <div class="qc-modal-backdrop" data-action="closeGameDetail">
-          <div class="qc-modal" data-action="noop">
-            <div class="qc-modal-scroll"><div class="qc-loading">Loading…</div></div>
-          </div>
+        <div class="qc-modal">
+          <div class="qc-modal-scroll"><div class="qc-loading">Loading…</div></div>
         </div>
       `;
     }
@@ -1225,17 +1284,15 @@ class QuestarrCard extends HTMLElement {
       : "";
 
     return `
-      <div class="qc-modal-backdrop" data-action="closeGameDetail">
-        <div class="qc-modal" data-action="noop">
-          ${bannerHtml}
-          <div class="qc-modal-scroll">
-            <div class="qc-modal-header">
-              <div class="qc-modal-title">${esc(game.title)}</div>
-              <button class="qc-btn icon secondary" data-action="closeGameDetail"><ha-icon icon="mdi:close"></ha-icon></button>
-            </div>
-            <div class="qc-nav qc-modal-nav">${tabBtns}</div>
-            <div class="qc-modal-body">${body}</div>
+      <div class="qc-modal">
+        ${bannerHtml}
+        <div class="qc-modal-scroll">
+          <div class="qc-modal-header">
+            <div class="qc-modal-title">${esc(game.title)}</div>
+            <button class="qc-btn icon secondary" data-action="closeGameDetail"><ha-icon icon="mdi:close"></ha-icon></button>
           </div>
+          <div class="qc-nav qc-modal-nav">${tabBtns}</div>
+          <div class="qc-modal-body">${body}</div>
         </div>
       </div>
     `;
@@ -2338,8 +2395,8 @@ class QuestarrCard extends HTMLElement {
       : `<div class="qc-empty">No notifications.</div>`;
 
     return `
-      <div class="qc-notif-backdrop" data-action="closeNotifications">
-        <div class="qc-notif-panel" data-action="noop">
+      <div class="qc-modal qc-modal-narrow">
+        <div class="qc-modal-scroll">
           <div class="qc-modal-header">
             <div class="qc-modal-title">Notifications</div>
             <button class="qc-btn icon secondary" data-action="closeNotifications"><ha-icon icon="mdi:close"></ha-icon></button>
